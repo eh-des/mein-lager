@@ -6,109 +6,94 @@ import io
 st.set_page_config(page_title="Lager-Scanner", page_icon="📦")
 
 # --- FUNKTIONEN ---
-def load_initial_data():
+def load_data():
+    file_path = "Lagerbestand.xlsx"
     try:
-        df = pd.read_excel("Lagerbestand.xlsx")
-        # Leerzeichen aus Spaltennamen entfernen (sehr wichtig!)
-        df.columns = df.columns.str.strip()
-        
-        # Sicherstellen, dass die Spalten existieren (Groß/Kleinschreibung fixen)
-        rename_dict = {
-            "qr_id": "QR_ID", "id": "QR_ID", "ID": "QR_ID",
-            "material": "Material", "name": "Material",
-            "status": "Status",
-            "preis": "Preis", "kosten": "Preis"
-        }
-        # Wir benennen Spalten um, falls sie klein geschrieben wurden
-        df.rename(columns=lambda x: rename_dict.get(x.lower(), x), inplace=True)
-        
-        # Datentypen festlegen
-        df["Status"] = df["Status"].astype(str)
-        df["QR_ID"] = df["QR_ID"].astype(str)
-        if "Preis" in df.columns:
-            df["Preis"] = pd.to_numeric(df["Preis"], errors='coerce').fillna(0.0)
-            
+        df = pd.read_excel(file_path)
+        # Spaltennamen säubern
+        df.columns = [str(c).strip() for c in df.columns]
         return df
-    except Exception as e:
-        st.error(f"Fehler beim Laden: {e}")
+    except:
+        # Wenn Datei nicht da oder kaputt: Erstelle eine saubere neue Struktur
         return pd.DataFrame(columns=["QR_ID", "Material", "Lieferant", "Status", "Datum_Eingang", "Datum_Ausgang", "Preis"])
 
 def to_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Lagerbestand')
+        df.to_excel(writer, index=False)
     return output.getvalue()
 
 # --- INITIALISIERUNG ---
 if "lager_daten" not in st.session_state:
-    st.session_state.lager_daten = load_initial_data()
+    st.session_state.lager_daten = load_data()
 
 # --- NAVIGATION ---
-st.title("📦 Mein Lager-Prototyp")
-menu = st.sidebar.radio("Menü", ["Lagerbestand & Scanner", "Wareneingang (Neu aufnehmen)"])
+st.title("📦 Lager-Verwaltung v2.1")
+menu = st.sidebar.radio("Menü", ["Bestand & Scanner", "Wareneingang"])
 
-# --- SEITE 1: SCANNER & BESTAND ---
-if menu == "Lagerbestand & Scanner":
+# --- SEITE 1: BESTAND & SCANNER ---
+if menu == "Bestand & Scanner":
     df = st.session_state.lager_daten
-    lager_aktuell = df[df["Status"].str.contains("Eingang", case=False, na=False)]
+    # Filter: Nur was im Eingang ist
+    lager_aktuell = df[df["Status"] == "Eingang"]
 
     st.subheader("Aktueller Lagerbestand")
-    st.dataframe(lager_aktuell[["QR_ID", "Material", "Lieferant", "Preis"]], use_container_width=True)
+    if not lager_aktuell.empty:
+        st.dataframe(lager_aktuell[["QR_ID", "Material", "Lieferant", "Preis"]], use_container_width=True)
+    else:
+        st.info("Das Lager ist aktuell leer.")
 
     st.divider()
     st.subheader("QR-Scanner (Verbrauch)")
     scan_input = st.text_input("ID einscannen/tippen:", key="scanner_input").strip()
 
     if scan_input:
-        treffer_index = df.index[df["QR_ID"].astype(str) == scan_input].tolist()
-        if treffer_index:
-            idx = treffer_index[0]
-            material = df.at[idx, "Material"]
-            if "Eingang" in df.at[idx, "Status"]:
-                st.success(f"Gefunden: **{material}**")
-                if st.button(f"✅ {material} verbrauchen"):
+        # Suche ID (als String vergleichen)
+        idx_list = df.index[df["QR_ID"].astype(str) == scan_input].tolist()
+        if idx_list:
+            idx = idx_list[0]
+            if df.at[idx, "Status"] == "Eingang":
+                st.success(f"Gefunden: {df.at[idx, 'Material']}")
+                if st.button("Verbrauch bestätigen"):
                     st.session_state.lager_daten.at[idx, "Status"] = "Verbraucht"
                     st.session_state.lager_daten.at[idx, "Datum_Ausgang"] = datetime.now().strftime("%d.%m.%Y")
                     st.rerun()
             else:
-                st.warning(f"Schon am {df.at[idx, 'Datum_Ausgang']} verbraucht!")
+                st.warning("Dieses Gebinde ist bereits verbraucht.")
         else:
-            st.error("ID unbekannt.")
+            st.error("ID nicht gefunden.")
 
 # --- SEITE 2: WARENEINGANG ---
 else:
-    st.subheader("Neues Gebinde aufnehmen")
-    
-    with st.form("neues_material_form"):
-        neu_id = st.text_input("QR-ID (scannen oder vergeben)")
-        neu_name = st.text_input("Material Name")
-        neu_lieferant = st.text_input("Lieferant")
-        # Hier stellen wir sicher, dass der Preis als Zahl erkannt wird
-        neu_preis = st.number_input("Preis pro Gebinde", min_value=0.0, step=0.01, format="%.2f")
+    st.subheader("Neues Material aufnehmen")
+    with st.form("input_form", clear_on_submit=True):
+        f_id = st.text_input("QR-ID")
+        f_name = st.text_input("Material Name")
+        f_lief = st.text_input("Lieferant")
+        f_preis = st.number_input("Preis", min_value=0.0, format="%.2f")
         
-        submitted = st.form_submit_button("In den Bestand aufnehmen")
+        btn = st.form_submit_button("Speichern")
         
-        if submitted:
-            if neu_id and neu_name:
-                if neu_id in st.session_state.lager_daten["QR_ID"].astype(str).values:
-                    st.error("Fehler: Diese ID existiert bereits!")
-                else:
-                    neue_zeile = {
-                        "QR_ID": str(neu_id),
-                        "Material": str(neu_name),
-                        "Lieferant": str(neu_lieferant),
-                        "Status": "Eingang",
-                        "Datum_Eingang": datetime.now().strftime("%d.%m.%Y"),
-                        "Datum_Ausgang": "",
-                        "Preis": float(neu_preis) # Explizit als Zahl speichern
-                    }
-                    # Neue Zeile an den Datenframe anhängen
-                    st.session_state.lager_daten = pd.concat([st.session_state.lager_daten, pd.DataFrame([neue_zeile])], ignore_index=True)
-                    st.success(f"{neu_name} wurde erfolgreich hinzugefügt!")
+        if btn:
+            if f_id and f_name:
+                neue_daten = {
+                    "QR_ID": str(f_id),
+                    "Material": str(f_name),
+                    "Lieferant": str(f_lief),
+                    "Status": "Eingang",
+                    "Datum_Eingang": datetime.now().strftime("%d.%m.%Y"),
+                    "Datum_Ausgang": "",
+                    "Preis": float(f_preis)
+                }
+                # Hinzufügen zum Speicher
+                st.session_state.lager_daten = pd.concat([st.session_state.lager_daten, pd.DataFrame([neue_daten])], ignore_index=True)
+                st.success(f"{f_name} wurde vorgemerkt!")
             else:
-                st.warning("Bitte ID und Name ausfüllen.")
+                st.error("ID und Name sind Pflichtfelder!")
 
 # --- EXPORT ---
 st.sidebar.divider()
+st.sidebar.subheader("Speichern & Download")
+st.sidebar.write("Änderungen gehen beim Neuladen der Seite verloren, wenn du nicht exportierst!")
 excel_data = to_excel(st.session_state.lager_daten)
-st.sidebar.download_button(label="📥 Inventur-Liste Exportieren", data=excel_data, file_name="Lager_Update.xlsx")
+st.sidebar.download_button("📥 Excel Herunterladen", data=excel_data, file_name="Lager_Aktuell.xlsx")
