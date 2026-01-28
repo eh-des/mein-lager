@@ -3,3 +3,4 @@ openpyxl
 PyGithub
 qrcode[pil]
 Pillow
+opencv-python-headless
