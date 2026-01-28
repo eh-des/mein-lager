@@ -9,54 +9,38 @@ from github import Github
 
 st.set_page_config(page_title="Lager-Diagnose", page_icon="📦", layout="wide")
 
-# --- BITTE HIER PRÜFEN ---
-# Gib hier zur Sicherheit deinen GitHub-Namen mit an, z.B. "DeinName/mein-lager"
 GITHUB_REPO_PATH = "eh-des/mein-lager" 
 GITHUB_FILENAME = "Lagerbestand.xlsx"
 
-# --- VERBESSERTE SPEICHER-FUNKTION MIT FEHLERMELDUNG ---
+# --- SPEICHER-FUNKTION ---
 def save_to_github(df):
     try:
         if "GITHUB_TOKEN" not in st.secrets:
-            st.error("❌ Schlüssel fehlt: 'GITHUB_TOKEN' nicht in Streamlit Secrets gefunden!")
+            st.error("❌ Schlüssel fehlt: 'GITHUB_TOKEN' nicht gefunden!")
             return False
             
         g = Github(st.secrets["GITHUB_TOKEN"])
-        repo = g.get_repo(GITHUB_REPO_PATH) # Nutzt jetzt den vollen Pfad
+        repo = g.get_repo(GITHUB_REPO_PATH)
         
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False)
         excel_data = output.getvalue()
         
-        try:
-            # Versuche vorhandene Datei zu finden
-            contents = repo.get_contents(GITHUB_FILENAME)
-            repo.update_file(
-                path=GITHUB_FILENAME,
-                message=f"Lager-Update {datetime.now().strftime('%H:%M:%S')}",
-                content=excel_data,
-                sha=contents.sha
-            )
-            return True
-        except Exception as file_e:
-            # Wenn Datei nicht da, neu anlegen
-            st.warning(f"Datei nicht gefunden, erstelle neu... ({file_e})")
-            repo.create_file(
-                path=GITHUB_FILENAME,
-                message="Erster Lagerbestand",
-                content=excel_data
-            )
-            return True
-            
+        contents = repo.get_contents(GITHUB_FILENAME)
+        repo.update_file(
+            path=GITHUB_FILENAME,
+            message=f"Lager-Update {datetime.now().strftime('%H:%M:%S')}",
+            content=excel_data,
+            sha=contents.sha
+        )
+        return True
     except Exception as e:
         st.error(f"❌ GitHub-Fehler: {e}")
-        st.info("Prüfe, ob der Repository-Name und dein Token korrekt sind.")
         return False
 
 def load_data():
     try:
-        # Wir versuchen die Datei direkt zu laden
         g = Github(st.secrets["GITHUB_TOKEN"])
         repo = g.get_repo(GITHUB_REPO_PATH)
         contents = repo.get_contents(GITHUB_FILENAME)
@@ -70,18 +54,19 @@ if "lager_daten" not in st.session_state:
 
 # --- SIDEBAR & EXPORT ---
 st.sidebar.title("📦 Lager-Profi")
-if st.sidebar.button("🔄 Daten von GitHub neu laden"):
+if st.sidebar.button("🔄 Daten neu laden"):
     st.session_state.lager_daten = load_data()
     st.rerun()
 
-df_current = st.session_state.lager_daten
-lager_bestand = df_current[df_current["Status"] == "Eingang"]
+# 1) WICHTIG: Hier bereiten wir ZWEI Versionen der Daten vor
+df_all = st.session_state.lager_daten  # Die komplette Historie für Excel
+df_ist = df_all[df_all["Status"] == "Eingang"]  # Nur der Ist-Stand für die App
 
-# Export Button
+# 2) FEHLERBEHEBUNG EXPORT: Wir exportieren df_all (inkl. Ausgänge/Verbraucht)
 buf = io.BytesIO()
 with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-    lager_bestand.to_excel(writer, index=False)
-st.sidebar.download_button("📥 Inventur-Export (Excel)", buf.getvalue(), f"Lager_{datetime.now().strftime('%d-%m')}.xlsx")
+    df_all.to_excel(writer, index=False)
+st.sidebar.download_button("📥 Komplettes Logbuch (Excel)", buf.getvalue(), f"Lager_Historie_{datetime.now().strftime('%d-%m')}.xlsx")
 
 st.sidebar.divider()
 menu = st.sidebar.radio("Menü:", ["📥 Annahme", "📤 Ausgang", "📊 Bestand"])
@@ -103,13 +88,30 @@ if menu == "📥 Annahme":
         p = data.split(";")
         if len(p) >= 2:
             s_id, s_mat = p[0].strip(), p[1].strip()
-            st.success(f"Gelesen: {s_mat}")
-            if st.button("Speichern"):
-                nz = {"QR_ID": s_id, "Material": s_mat, "Lieferant": p[2] if len(p)>2 else "", "Status": "Eingang", "Datum_Eingang": datetime.now().strftime("%d.%m.%Y"), "Datum_Ausgang": "", "Preis": float(p[3]) if len(p)>3 else 0.0}
-                st.session_state.lager_daten = pd.concat([st.session_state.lager_daten, pd.DataFrame([nz])], ignore_index=True)
-                if save_to_github(st.session_state.lager_daten):
-                    st.success("Dauerhaft auf GitHub gespeichert!")
-                    st.balloons()
+            
+            # --- FEHLERBEHEBUNG DUPLIKATE ---
+            # Wir prüfen, ob diese ID bereits mit Status "Eingang" im System ist
+            bereits_da = not df_all[(df_all["QR_ID"] == s_id) & (df_all["Status"] == "Eingang")].empty
+            
+            if bereits_da:
+                st.error(f"❌ Fehler: Der Code '{s_id}' ({s_mat}) ist bereits im Bestand!")
+            else:
+                st.success(f"Bereit zum Speichern: {s_mat}")
+                if st.button("Speichern"):
+                    nz = {
+                        "QR_ID": s_id, 
+                        "Material": s_mat, 
+                        "Lieferant": p[2] if len(p)>2 else "", 
+                        "Status": "Eingang", 
+                        "Datum_Eingang": datetime.now().strftime("%d.%m.%Y %H:%M:%S"), 
+                        "Datum_Ausgang": "", 
+                        "Preis": float(p[3]) if len(p)>3 else 0.0
+                    }
+                    st.session_state.lager_daten = pd.concat([st.session_state.lager_daten, pd.DataFrame([nz])], ignore_index=True)
+                    if save_to_github(st.session_state.lager_daten):
+                        st.success("Erfolgreich aufgenommen!")
+                        st.balloons()
+                        st.rerun()
         else:
             st.error("QR-Format falsch!")
 
@@ -119,18 +121,22 @@ elif menu == "📤 Ausgang":
     if sid:
         clean_id = sid.split(";")[0].strip()
         df = st.session_state.lager_daten
+        # Wir suchen nur Teile, die aktuell im "Eingang" sind
         t = df[(df["QR_ID"] == clean_id) & (df["Status"] == "Eingang")]
+        
         if not t.empty:
-            st.warning(f"Material: {df.at[t.index[0], 'Material']}")
+            st.warning(f"Material gefunden: {df.at[t.index[0], 'Material']}")
             if st.button("Abbuchung Bestätigen"):
-                df.at[t.index[0], "Status"] = "Verbraucht"
-                df.at[t.index[0], "Datum_Ausgang"] = datetime.now().strftime("%d.%m.%Y")
+                # Hier ändern wir den Status auf "Ausgang" (oder Verbraucht)
+                df.at[t.index[0], "Status"] = "Ausgang"
+                df.at[t.index[0], "Datum_Ausgang"] = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
                 if save_to_github(df):
                     st.success("Abgebucht!")
                     st.rerun()
         else:
-            st.error("ID nicht gefunden.")
+            st.error("ID nicht im Bestand oder bereits abgebucht.")
 
 elif menu == "📊 Bestand":
-    st.header("Lagerbestand")
-    st.dataframe(lager_bestand, use_container_width=True)
+    st.header("Aktueller Ist-Stand")
+    # Hier zeigen wir NUR die Sachen an, die im Status "Eingang" sind
+    st.dataframe(df_ist, use_container_width=True)
