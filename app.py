@@ -27,7 +27,7 @@ def save_to_github(df):
         excel_data = output.getvalue()
         try:
             contents = repo.get_contents(GITHUB_FILENAME)
-            repo.update_file(path=GITHUB_FILENAME, message="Update", content=excel_data, sha=contents.sha)
+            repo.update_file(path=GITHUB_FILENAME, message="Lager-Update", content=excel_data, sha=contents.sha)
             return True
         except:
             repo.create_file(path=GITHUB_FILENAME, message="Initial", content=excel_data)
@@ -49,6 +49,10 @@ def load_data():
 if "lager_daten" not in st.session_state:
     st.session_state.lager_daten = load_data()
 
+# WICHTIG: Schlüssel für den Scanner-Reset
+if "scanner_key" not in st.session_state:
+    st.session_state.scanner_key = 0
+
 # --- SIDEBAR ---
 st.sidebar.title("📦 Lager-Optionen")
 
@@ -56,24 +60,26 @@ if st.sidebar.button("🔄 Daten neu laden"):
     st.session_state.lager_daten = load_data()
     st.rerun()
 
-# Export
+# Export: Volles Logbuch für Excel
 buf = io.BytesIO()
 with pd.ExcelWriter(buf, engine='openpyxl') as writer:
     st.session_state.lager_daten.to_excel(writer, index=False)
-st.sidebar.download_button("📥 Excel Logbuch (Eingang & Ausgang)", buf.getvalue(), f"Logbuch_{datetime.now().strftime('%d-%m')}.xlsx")
+st.sidebar.download_button("📥 Excel Logbuch (Historie)", buf.getvalue(), f"Logbuch_{datetime.now().strftime('%d-%m')}.xlsx")
 
 if st.sidebar.button("🗑️ Gesamte Liste löschen"):
     empty_df = pd.DataFrame(columns=["QR_ID", "Material", "Lieferant", "Status", "Datum_Eingang", "Datum_Ausgang", "Preis"])
     if save_to_github(empty_df):
         st.session_state.lager_daten = empty_df
+        st.session_state.scanner_key += 1 # Scanner resetten
         st.rerun()
 
 st.sidebar.divider()
 menu = st.sidebar.radio("Menü:", ["📥 Annahme", "📤 Ausgang", "📊 Bestand"])
 
-# --- SCANNER FUNKTION ---
+# --- SCANNER FUNKTION (MIT RESET-LOGIK) ---
 def scan():
-    img = st.camera_input("Scanner")
+    # Der Key ändert sich nach jedem Speichern, was die Kamera zurücksetzt
+    img = st.camera_input("Scanner", key=f"scanner_{st.session_state.scanner_key}")
     if img:
         detector = cv2.QRCodeDetector()
         data, _, _ = detector.detectAndDecode(cv2.imdecode(np.asarray(bytearray(img.read()), dtype=np.uint8), 1))
@@ -89,16 +95,19 @@ if menu == "📥 Annahme":
         p = data.split(";")
         if len(p) >= 2:
             s_id, s_mat = p[0].strip(), p[1].strip()
-            
-            # WICHTIG: Wir prüfen im aktuellen Session-State
             df = st.session_state.lager_daten
+            
+            # Check ob bereits im Bestand
             ist_vorhanden = not df[(df["QR_ID"] == s_id) & (df["Status"] == "Eingang")].empty
             
             if ist_vorhanden:
                 st.error(f"❌ '{s_mat}' ist bereits im Lager!")
-            else:
+                if st.button("Trotzdem erneut aufnehmen?"):
+                    ist_vorhanden = False # Erlaubt manuellen Override
+            
+            if not ist_vorhanden:
                 st.success(f"Gelesen: {s_mat}")
-                if st.button("Speichern"):
+                if st.button("Speichern bestätigen"):
                     nz = {
                         "QR_ID": s_id, "Material": s_mat, 
                         "Lieferant": p[2] if len(p)>2 else "", 
@@ -109,8 +118,8 @@ if menu == "📥 Annahme":
                     }
                     st.session_state.lager_daten = pd.concat([st.session_state.lager_daten, pd.DataFrame([nz])], ignore_index=True)
                     if save_to_github(st.session_state.lager_daten):
-                        st.success("Gespeichert!")
-                        st.rerun() # Sofortiger Neustart, damit die Fehlermeldung nicht erscheint
+                        st.session_state.scanner_key += 1 # WICHTIG: Scanner-Key ändern!
+                        st.rerun()
         else:
             st.error("QR-Format fehlerhaft!")
 
@@ -120,23 +129,24 @@ elif menu == "📤 Ausgang":
     if sid:
         clean_id = sid.split(";")[0].strip()
         df = st.session_state.lager_daten
-        t_index = df[(df["QR_ID"] == clean_id) & (df["Status"] == "Eingang")].index
+        t_rows = df[(df["QR_ID"] == clean_id) & (df["Status"] == "Eingang")]
         
-        if not t_index.empty:
-            st.warning(f"Material: {df.at[t_index[0], 'Material']}")
-            if st.button("Abbuchung Bestätigen"):
-                # Wir bearbeiten direkt den Session State
-                st.session_state.lager_daten.at[t_index[0], "Status"] = "Ausgang"
-                st.session_state.lager_daten.at[t_index[0], "Datum_Ausgang"] = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        if not t_rows.empty:
+            st.warning(f"Material gefunden: {df.at[t_rows.index[0], 'Material']}")
+            if st.button("Abbuchung jetzt durchführen"):
+                # Ersten passenden Eintrag auf Ausgang setzen
+                idx = t_rows.index[0]
+                st.session_state.lager_daten.at[idx, "Status"] = "Ausgang"
+                st.session_state.lager_daten.at[idx, "Datum_Ausgang"] = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
                 
                 if save_to_github(st.session_state.lager_daten):
-                    st.rerun() # Neustart verhindert die "ID nicht gefunden" Meldung
+                    st.session_state.scanner_key += 1 # WICHTIG: Scanner-Key ändern!
+                    st.rerun()
         else:
-            # Diese Meldung kommt nur, wenn wirklich nichts gefunden wurde
-            st.error("ID nicht im Bestand.")
+            # Diese Meldung erscheint jetzt nicht mehr fälschlicherweise nach dem Speichern
+            st.error("Dieser Code ist nicht im aktiven Bestand.")
 
 elif menu == "📊 Bestand":
     st.header("Aktueller Ist-Stand")
-    # Hier zeigen wir nur die aktiven Bestände
     df_ist = st.session_state.lager_daten[st.session_state.lager_daten["Status"] == "Eingang"]
     st.dataframe(df_ist, use_container_width=True)
