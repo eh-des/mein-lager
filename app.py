@@ -6,11 +6,13 @@ st.set_page_config(page_title="Lager-Scanner", page_icon="📦")
 
 # --- FUNKTIONEN ---
 def load_initial_data():
-    # Lädt die Excel einmalig am Anfang
-    return pd.read_excel("Lagerbestand.xlsx")
+    df = pd.read_excel("Lagerbestand.xlsx")
+    # WICHTIG: Spalten flexibel machen, um Text/Daten speichern zu können
+    df["Status"] = df["Status"].astype(str)
+    df["Datum_Ausgang"] = df["Datum_Ausgang"].astype(object) 
+    return df
 
 # --- INITIALISIERUNG ---
-# Wir speichern die Daten in den 'session_state', damit Änderungen sofort sichtbar sind
 if "lager_daten" not in st.session_state:
     st.session_state.lager_daten = load_initial_data()
 
@@ -41,15 +43,16 @@ if scan_input:
             st.success(f"Gefunden: **{material}**")
             
             if st.button(f"✅ {material} als VERBRAUCHT markieren"):
-                # Status im Kurzzeitgedächtnis ändern
+                # Status und Datum im Kurzzeitgedächtnis ändern
                 st.session_state.lager_daten.at[idx, "Status"] = "Verbraucht"
                 st.session_state.lager_daten.at[idx, "Datum_Ausgang"] = datetime.now().strftime("%d.%m.%Y")
                 
                 st.balloons()
                 st.success(f"{material} wurde aus dem Bestand ausgebucht!")
-                # Seite neu laden, um Tabelle zu aktualisieren
+                # Kurze Pause, dann neu laden
                 st.rerun()
         else:
-            st.warning(f"Achtung: **{material}** wurde bereits am {df.at[idx, 'Datum_Ausgang']} verbraucht!")
+            ausgangs_datum = df.at[idx, 'Datum_Ausgang']
+            st.warning(f"Achtung: **{material}** wurde bereits am {ausgangs_datum} verbraucht!")
     else:
         st.error("ID unbekannt.")
