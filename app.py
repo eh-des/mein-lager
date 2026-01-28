@@ -14,7 +14,7 @@ st.set_page_config(page_title="Lager-System", page_icon="📦")
 GITHUB_REPO = "mein-lager"
 GITHUB_FILENAME = "Lagerbestand.xlsx"
 
-# --- FUNKTIONEN (Speichern & Laden) ---
+# --- FUNKTIONEN ---
 def save_to_github(df):
     try:
         g = Github(st.secrets["GITHUB_TOKEN"])
@@ -27,13 +27,20 @@ def save_to_github(df):
         repo.update_file(path=GITHUB_FILENAME, message="Lager-Update", content=excel_data, sha=contents.sha)
         return True
     except Exception as e:
-        st.error(f"Fehler beim Speichern: {e}")
+        st.error(f"Fehler beim Speichern auf GitHub: {e}")
         return False
 
 def load_data():
     try:
-        return pd.read_excel(GITHUB_FILENAME)
+        df = pd.read_excel(GITHUB_FILENAME)
+        # WICHTIG: Spalten-Typen erzwingen, um Fehler beim Schreiben zu vermeiden
+        df["QR_ID"] = df["QR_ID"].astype(str)
+        df["Status"] = df["Status"].astype(str)
+        df["Datum_Ausgang"] = df["Datum_Ausgang"].astype(object)
+        df["Material"] = df["Material"].astype(str)
+        return df
     except:
+        # Falls Datei nicht existiert, leeres Gerüst bauen
         return pd.DataFrame(columns=["QR_ID", "Material", "Lieferant", "Status", "Datum_Eingang", "Datum_Ausgang", "Preis"])
 
 # Initialisierung
@@ -48,17 +55,17 @@ if menu == "Bestand & Scanner":
     st.title("📦 Lagerbestand")
     df = st.session_state.lager_daten
     lager_aktuell = df[df["Status"] == "Eingang"]
+    
+    st.subheader("Aktueller Lagerbestand")
     st.dataframe(lager_aktuell[["QR_ID", "Material", "Lieferant", "Preis"]], use_container_width=True)
     
     st.divider()
     st.subheader("Scanner")
     
-    # NEU: Kamera-Scanner Funktion
     img_file = st.camera_input("📷 Code scannen")
-    
     scan_id = ""
+    
     if img_file:
-        # Bild verarbeiten und QR-Code suchen
         file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
         opencv_image = cv2.imdecode(file_bytes, 1)
         detector = cv2.QRCodeDetector()
@@ -67,9 +74,8 @@ if menu == "Bestand & Scanner":
             scan_id = data
             st.success(f"Code erkannt: {scan_id}")
         else:
-            st.warning("Kein QR-Code im Bild gefunden. Bitte näher ran oder besser beleuchten.")
+            st.warning("Kein QR-Code erkannt. Bitte näher ran!")
 
-    # Manuelle Eingabe (wird automatisch gefüllt, wenn Kamera scannt)
     id_eingabe = st.text_input("Gescannte ID:", value=scan_id).strip()
     
     if id_eingabe:
@@ -80,32 +86,50 @@ if menu == "Bestand & Scanner":
             if df.at[idx, "Status"] == "Eingang":
                 st.info(f"Gefunden: **{material}**")
                 if st.button(f"✅ {material} jetzt verbrauchen"):
+                    # DATENTYPEN SICHERSTELLEN VOR DEM SCHREIBEN
+                    df["Datum_Ausgang"] = df["Datum_Ausgang"].astype(object)
                     df.at[idx, "Status"] = "Verbraucht"
                     df.at[idx, "Datum_Ausgang"] = datetime.now().strftime("%d.%m.%Y")
-                    if save_to_github(df):
-                        st.success("Erfolgreich ausgebucht!")
-                        st.rerun()
+                    
+                    with st.spinner('Speichere auf GitHub...'):
+                        if save_to_github(df):
+                            st.success("Erfolgreich ausgebucht!")
+                            st.rerun()
             else:
-                st.warning(f"Achtung: Wurde bereits am {df.at[idx, 'Datum_Ausgang']} verbraucht.")
+                st.warning(f"Schon am {df.at[idx, 'Datum_Ausgang']} verbraucht.")
         else:
-            st.error("Diese ID existiert nicht im System.")
+            st.error("ID unbekannt.")
 
-# (Restliche Seiten bleiben gleich wie vorher...)
+# --- SEITE 2: WARENEINGANG ---
 elif menu == "Wareneingang":
     st.title("➕ Wareneingang")
-    with st.form("in_form"):
+    with st.form("in_form", clear_on_submit=True):
         f_id = st.text_input("QR-ID")
         f_name = st.text_input("Material Name")
         f_lief = st.text_input("Lieferant")
-        f_preis = st.number_input("Preis", min_value=0.0)
+        f_preis = st.number_input("Preis", min_value=0.0, format="%.2f")
+        
         if st.form_submit_button("Speichern"):
-            df = st.session_state.lager_daten
-            neue_zeile = {"QR_ID": str(f_id), "Material": str(f_name), "Lieferant": str(f_lief), "Status": "Eingang", "Datum_Eingang": datetime.now().strftime("%d.%m.%Y"), "Datum_Ausgang": "", "Preis": float(f_preis)}
-            df = pd.concat([df, pd.DataFrame([neue_zeile])], ignore_index=True)
-            if save_to_github(df):
-                st.session_state.lager_daten = df
-                st.success("Gespeichert!")
+            if f_id and f_name:
+                df = st.session_state.lager_daten
+                neue_zeile = {
+                    "QR_ID": str(f_id), 
+                    "Material": str(f_name), 
+                    "Lieferant": str(f_lief), 
+                    "Status": "Eingang", 
+                    "Datum_Eingang": datetime.now().strftime("%d.%m.%Y"), 
+                    "Datum_Ausgang": "", 
+                    "Preis": float(f_preis)
+                }
+                df = pd.concat([df, pd.DataFrame([neue_zeile])], ignore_index=True)
+                with st.spinner('Speichere auf GitHub...'):
+                    if save_to_github(df):
+                        st.session_state.lager_daten = df
+                        st.success("Dauerhaft gespeichert!")
+            else:
+                st.error("Bitte ID und Name ausfüllen.")
 
+# --- SEITE 3: QR-GENERATOR ---
 else:
     st.title("🖨 QR-Generator")
     qr_id_input = st.text_input("ID für Etikett eingeben:")
@@ -113,5 +137,5 @@ else:
         qr = qrcode.make(qr_id_input)
         buf = io.BytesIO()
         qr.save(buf, format="PNG")
-        st.image(buf.getvalue(), caption=f"ID: {qr_id_input}", width=200)
+        st.image(buf.getvalue(), caption=f"Vorschau für ID: {qr_id_input}", width=200)
         st.download_button("Download QR-Code", buf.getvalue(), f"QR_{qr_id_input}.png")
