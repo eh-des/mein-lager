@@ -1,41 +1,55 @@
 import streamlit as st
 import pandas as pd
+from datetime import datetime
 
 st.set_page_config(page_title="Lager-Scanner", page_icon="📦")
 
-st.title("📦 Mein Lager-Prototyp")
-
-# Daten laden
-@st.cache_data # Das macht die App schneller
-def load_data():
+# --- FUNKTIONEN ---
+def load_initial_data():
+    # Lädt die Excel einmalig am Anfang
     return pd.read_excel("Lagerbestand.xlsx")
 
-try:
-    df = load_data()
+# --- INITIALISIERUNG ---
+# Wir speichern die Daten in den 'session_state', damit Änderungen sofort sichtbar sind
+if "lager_daten" not in st.session_state:
+    st.session_state.lager_daten = load_initial_data()
+
+# --- HAUPTPROGRAMM ---
+st.title("📦 Mein Lager-Prototyp")
+
+# Aktuellen Bestand filtern (nur "Eingang")
+df = st.session_state.lager_daten
+lager_aktuell = df[df["Status"] == "Eingang"]
+
+st.subheader("Aktueller Lagerbestand")
+st.dataframe(lager_aktuell[["QR_ID", "Material", "Lieferant", "Preis"]], use_container_width=True)
+
+st.divider()
+st.subheader("QR-Scanner Simulation")
+scan_input = st.text_input("ID einscannen/tippen:", key="scanner_input").strip()
+
+if scan_input:
+    # Suche in der Spalte QR_ID
+    treffer_index = df.index[df["QR_ID"].astype(str) == scan_input].tolist()
     
-    # Anzeige des aktuellen Bestands
-    st.subheader("Aktueller Lagerbestand")
-    # Wir zeigen nur Gebinde an, die noch nicht verbraucht sind
-    lager_aktuell = df[df["Status"] == "Eingang"]
-    st.dataframe(lager_aktuell[["QR_ID", "Material", "Lieferant", "Preis"]], use_container_width=True)
-
-    # Der Scanner Bereich
-    st.divider()
-    st.subheader("Barcode/QR Scan Simulation")
-    scan_input = st.text_input("ID hier einscannen (oder tippen):").strip()
-
-    if scan_input:
-        treffer = df[df["QR_ID"].astype(str) == scan_input]
+    if treffer_index:
+        idx = treffer_index[0]
+        material = df.at[idx, "Material"]
+        status = df.at[idx, "Status"]
         
-        if not treffer.empty:
-            material = treffer["Material"].values[0]
+        if status == "Eingang":
             st.success(f"Gefunden: **{material}**")
             
-            if st.button(f"✅ {material} verbrauchen"):
+            if st.button(f"✅ {material} als VERBRAUCHT markieren"):
+                # Status im Kurzzeitgedächtnis ändern
+                st.session_state.lager_daten.at[idx, "Status"] = "Verbraucht"
+                st.session_state.lager_daten.at[idx, "Datum_Ausgang"] = datetime.now().strftime("%d.%m.%Y")
+                
                 st.balloons()
-                st.info("Logik zum Speichern bauen wir als Nächstes!")
+                st.success(f"{material} wurde aus dem Bestand ausgebucht!")
+                # Seite neu laden, um Tabelle zu aktualisieren
+                st.rerun()
         else:
-            st.error("ID nicht gefunden.")
-
-except Exception as e:
-    st.error(f"Ein Fehler ist aufgetreten: {e}")
+            st.warning(f"Achtung: **{material}** wurde bereits am {df.at[idx, 'Datum_Ausgang']} verbraucht!")
+    else:
+        st.error("ID unbekannt.")
