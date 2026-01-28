@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
-
+import os
+st.write("Ich sehe folgende Dateien im Ordner:", os.listdir())
 st.set_page_config(page_title="Lager-Scanner", page_icon="📦")
 
 st.title("📦 Mein Lager-Prototyp")
